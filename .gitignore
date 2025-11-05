@@ -1,0 +1,62 @@
+# CARLA Simulator (Download separately)
+CARLA_0.9.15/
+
+# Legacy/Old Files
+carla_adas_project-v*.py
+prj.py
+project.py
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environment
+venv/
+env/
+ENV/
+.venv
+
+# YOLOv5 cache
+yolov5/
+runs/
+weights/
+
+# Output Files
+logs/*.csv
+detections.csv
+*.log
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Temporary files
+*.tmp
+*.bak
+*.old
