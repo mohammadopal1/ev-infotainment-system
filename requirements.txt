@@ -1,0 +1,24 @@
+# CARLA Python API
+# Note: Install from your CARLA installation directory
+# Example: pip install path/to/CARLA_0.9.15/WindowsNoEditor/PythonAPI/carla/dist/carla-0.9.15-cp37-cp37m-win_amd64.whl
+carla==0.9.15
+
+# Core Dependencies
+numpy==1.21.6
+opencv-python==4.5.5.64
+pygame==2.6.1
+torch==1.13.1
+torchvision==0.14.1
+
+# YOLOv5 Dependencies
+yolov5==7.0.14
+pyyaml>=5.4.1
+matplotlib>=3.3.0
+pillow>=8.3.0
+scipy>=1.7.0
+tqdm>=4.62.0
+seaborn>=0.11.0
+pandas>=1.3.0
+
+# Optional but recommended
+ipython
