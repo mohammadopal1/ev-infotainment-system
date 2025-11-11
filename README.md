@@ -11,10 +11,13 @@ Electric Vehicle In-Vehicle Cameras and Onboard Display for Driving Safety Syste
 - **Real-time Blind Spot Detection**: Uses YOLOv5 for vehicle detection in left and right mirrors
 - **Lane Departure Warning**: Visual alerts when crossing lane markings
 - **Forward Collision Warning**: Proximity detection for vehicles ahead
+- **Multi-Sound Audio Alerts**: Distinct warning sounds for each scenario (blind spot, proximity, lane)
+- **Intelligent Warning System**: Auto-clearing warnings 0.5s after danger passes
 - **4-Camera Display**: Front, rear, and side mirror views
 - **Live Vehicle Telemetry**: Speed, throttle, brake, and steering indicators
 - **Manual Vehicle Control**: Keyboard-based driving interface
 - **CSV Data Logging**: Records all detections for analysis
+- **Fixed Tesla Model 3**: Consistent vehicle for testing and demonstration
 
 ## 📁 Project Structure
 
@@ -27,18 +30,23 @@ ev-infotainment-system/
 │   └── adas_dashboard.py          # Main ADAS dashboard application
 ├── assets/
 │   ├── yolov5n.pt                 # YOLOv5 model weights
-│   ├── beep.wav                   # (Optional) Alert sound file
+│   ├── blindspot_warning.wav      # Blind spot alert sound
+│   ├── proximity_warning.wav      # Forward collision alert sound
+│   ├── lane_warning.wav           # Lane departure alert sound
 │   └── README.md                  # Assets documentation
 ├── logs/
 │   ├── detections_*.csv           # Generated detection logs (auto-created)
 │   └── README.md                  # Logs documentation
 ├── docs/
 │   ├── INSTALLATION.md            # Detailed installation guide
-│   └── QUICKSTART.md              # Quick start guide
+│   ├── QUICKSTART.md              # Quick start guide
+│   ├── AUDIO_SYSTEM.md            # Audio alert system documentation
+│   └── DIRECTORY_STRUCTURE.md     # Project structure reference
 ├── setup/
 │   ├── setup.ps1                  # Automated setup script
 │   ├── run.ps1                    # Quick launch script
-│   └── check_carla_files.ps1      # CARLA verification script
+│   ├── check_carla_files.ps1      # CARLA verification script
+│   └── create_warning_sounds.py   # Generate audio alert files
 ├── requirements.txt               # Python dependencies
 ├── .gitignore                     # Git ignore rules
 ├── CHANGELOG.md                   # Version history
@@ -199,6 +207,33 @@ Or use the convenient launcher script:
    - Brake bar
    - Steering bar
    - Reverse indicator
+
+## 🔊 Audio Alert System
+
+The system features intelligent audio warnings with distinct sounds for each scenario:
+
+### Warning Sound Types
+
+| Scenario | Sound Pattern | Urgency | Description |
+|----------|--------------|---------|-------------|
+| **Blind Spot** | High-pitched short beep (1200Hz) | 🔴 HIGH | Single sharp beep when vehicle in blind spot |
+| **Proximity** | Double beep pattern (800Hz) | 🔴 CRITICAL | Beep-pause-beep when too close to vehicle ahead |
+| **Lane Departure** | Lower continuous tone (600Hz) | 🟡 MEDIUM | Smooth tone when crossing lane markings |
+
+### Smart Alert Management
+- ✅ **Time-based persistence**: Warnings auto-clear 0.5s after danger passes
+- ✅ **No alert fatigue**: Sounds play once when danger detected, not continuously
+- ✅ **Instant re-trigger**: Alert plays immediately if danger returns
+- ✅ **Distinct frequencies**: Quick identification without looking at screen
+
+### Setup Audio Files
+
+Audio files are automatically created during setup. To regenerate:
+```powershell
+python setup\create_warning_sounds.py
+```
+
+For custom sounds, see: [Audio System Documentation](docs/AUDIO_SYSTEM.md)
 
 ## 🧠 Technology Stack
 

@@ -17,9 +17,13 @@ import time
 import csv
 import datetime
 import math
-import ctypes
 import os
 import sys
+import platform
+
+# Windows-specific imports
+if platform.system() == 'Windows':
+    import ctypes
 
 # Get project root directory
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -33,11 +37,18 @@ os.makedirs(ASSETS_DIR, exist_ok=True)
 # =========================
 # YOLOv5 (pretrained)
 # =========================
+print("Loading YOLOv5 model...")
 model = torch.hub.load('ultralytics/yolov5:v7.0', 'yolov5n',
                        pretrained=True, trust_repo=True)
-model.conf = 0.25
+model.conf = 0.30  # Slightly higher confidence threshold for fewer false positives
 model.iou = 0.45
 VEHICLE_KEYWORDS = ("car", "truck", "bus")
+
+# Performance settings
+DETECTION_SKIP_FRAMES = 3  # Run detection every N frames (higher = faster but less responsive)
+TARGET_FPS = 30  # Target frame rate for main loop
+WARNING_CLEAR_TIME = 0.5  # Time in seconds to keep warning after danger clears
+print("Model loaded!")
 
 # =========================
 # CSV logging
@@ -52,19 +63,43 @@ print(f"Logging to: {log_filename}")
 # =========================
 # Pygame (UI + sound)
 # =========================
+# Audio System - Different sounds for different warnings
+# =========================
 pygame.init()
+audio_alerts = {
+    "blindspot": None,    # High-pitched beep for blind spot warnings
+    "proximity": None,    # Double beep for proximity warnings
+    "lane": None,         # Continuous tone for lane departure
+}
+
 try:
     pygame.mixer.init()
-    beep_path = os.path.join(ASSETS_DIR, "beep.wav")
-    if os.path.exists(beep_path):
-        beep_sound = pygame.mixer.Sound(beep_path)
-        print(f"Audio alerts enabled: {beep_path}")
+    
+    # Load different sound files for each warning type
+    sound_files = {
+        "blindspot": "blindspot_warning.wav",
+        "proximity": "proximity_warning.wav",
+        "lane": "lane_warning.wav",
+    }
+    
+    sounds_loaded = 0
+    for alert_type, filename in sound_files.items():
+        sound_path = os.path.join(ASSETS_DIR, filename)
+        if os.path.exists(sound_path):
+            audio_alerts[alert_type] = pygame.mixer.Sound(sound_path)
+            sounds_loaded += 1
+    
+    if sounds_loaded > 0:
+        print(f"Audio alerts enabled: {sounds_loaded}/3 warning sounds loaded")
     else:
-        beep_sound = None
-        print("Audio alerts disabled (beep.wav not found in assets/)")
+        print("Audio alerts disabled (no warning sound files found in assets/)")
+        print("  Expected files: blindspot_warning.wav, proximity_warning.wav, lane_warning.wav")
+        
 except Exception as e:
-    beep_sound = None
     print(f"Audio initialization failed: {e}")
+
+# Legacy beep_sound variable for compatibility
+beep_sound = audio_alerts["blindspot"]  # Fallback to blindspot sound
 
 
 # =========================
@@ -91,22 +126,106 @@ def draw_dashboard(left_state, right_state, lane_state, prox_alert,
     block_x, block_y, block_w, block_h = 20, 80, 560, 520
     cv2.rectangle(hud, (block_x, block_y), (block_x + block_w, block_y + block_h), (45, 45, 45), -1)
 
-    # Car body
-    body_top = block_y + 40
-    body_h = block_h - 80
-    body_w = int(body_h * 0.7)
+    # Car body - Tesla Model 3 TOP VIEW
+    body_top = block_y + 100
+    body_h = block_h - 200  # Length of car
+    body_w = int(body_h * 0.45)  # Width of car (top view proportions)
     cx = block_x + block_w // 2
     car_x1, car_y1 = cx - body_w // 2, body_top
     car_x2, car_y2 = cx + body_w // 2, body_top + body_h
-    cv2.rectangle(hud, (car_x1, car_y1), (car_x2, car_y2), (180, 180, 180), -1)
+    
+    # Main car body (silver/gray) - rounded front and back
+    car_body_color = (180, 180, 180)
+    
+    # Draw car body as rounded rectangle (top view)
+    # Front section (rounded)
+    cv2.ellipse(hud, (cx, car_y1 + 20), (body_w // 2, 20), 0, 180, 360, car_body_color, -1)
+    # Middle section
+    cv2.rectangle(hud, (car_x1, car_y1 + 20), (car_x2, car_y2 - 20), car_body_color, -1)
+    # Rear section (rounded)
+    cv2.ellipse(hud, (cx, car_y2 - 20), (body_w // 2, 20), 0, 0, 180, car_body_color, -1)
+    
+    # Car outline
+    cv2.ellipse(hud, (cx, car_y1 + 20), (body_w // 2, 20), 0, 180, 360, (120, 120, 120), 2)
+    cv2.line(hud, (car_x1, car_y1 + 20), (car_x1, car_y2 - 20), (120, 120, 120), 2)
+    cv2.line(hud, (car_x2, car_y1 + 20), (car_x2, car_y2 - 20), (120, 120, 120), 2)
+    cv2.ellipse(hud, (cx, car_y2 - 20), (body_w // 2, 20), 0, 0, 180, (120, 120, 120), 2)
+    
+    # Windshield (front glass - darker blue)
+    windshield_y = car_y1 + 25
+    windshield_h = 40
+    cv2.rectangle(hud, (car_x1 + 5, windshield_y), (car_x2 - 5, windshield_y + windshield_h), 
+                  (80, 120, 180), -1)
+    
+    # Rear window (back glass)
+    rear_window_y = car_y2 - 45
+    rear_window_h = 25
+    cv2.rectangle(hud, (car_x1 + 5, rear_window_y), (car_x2 - 5, rear_window_y + rear_window_h), 
+                  (80, 120, 180), -1)
+    
+    # Roof/cabin area (lighter)
+    cabin_y = windshield_y + windshield_h
+    cabin_h = rear_window_y - cabin_y
+    cv2.rectangle(hud, (car_x1 + 8, cabin_y), (car_x2 - 8, cabin_y + cabin_h), 
+                  (150, 150, 150), -1)
+    
+    # Side mirrors (top view - sticking out)
+    mirror_w, mirror_h = 8, 18
+    mirror_offset_y = car_y1 + 60
+    # Left mirror
+    cv2.rectangle(hud, (car_x1 - mirror_w - 3, mirror_offset_y), 
+                  (car_x1 - 3, mirror_offset_y + mirror_h), (140, 140, 140), -1)
+    cv2.rectangle(hud, (car_x1 - mirror_w - 3, mirror_offset_y), 
+                  (car_x1 - 3, mirror_offset_y + mirror_h), (100, 100, 100), 1)
+    # Right mirror
+    cv2.rectangle(hud, (car_x2 + 3, mirror_offset_y), 
+                  (car_x2 + mirror_w + 3, mirror_offset_y + mirror_h), (140, 140, 140), -1)
+    cv2.rectangle(hud, (car_x2 + 3, mirror_offset_y), 
+                  (car_x2 + mirror_w + 3, mirror_offset_y + mirror_h), (100, 100, 100), 1)
+    
+    # Wheels (top view - visible at sides)
+    wheel_w, wheel_h = 10, 35
+    wheel_color = (40, 40, 40)
+    # Front left wheel
+    cv2.rectangle(hud, (car_x1 - wheel_w, car_y1 + 35), (car_x1, car_y1 + 35 + wheel_h), 
+                  wheel_color, -1)
+    # Front right wheel
+    cv2.rectangle(hud, (car_x2, car_y1 + 35), (car_x2 + wheel_w, car_y1 + 35 + wheel_h), 
+                  wheel_color, -1)
+    # Rear left wheel
+    cv2.rectangle(hud, (car_x1 - wheel_w, car_y2 - 70), (car_x1, car_y2 - 70 + wheel_h), 
+                  wheel_color, -1)
+    # Rear right wheel
+    cv2.rectangle(hud, (car_x2, car_y2 - 70), (car_x2 + wheel_w, car_y2 - 70 + wheel_h), 
+                  wheel_color, -1)
+    
+    # Tesla logo or "T" badge on hood
+    cv2.putText(hud, "T", (cx - 6, car_y1 + 18), 
+                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2, cv2.LINE_AA)
+    
+    # Model label
+    cv2.putText(hud, "Model 3", (cx - 32, car_y2 + 30), 
+                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1, cv2.LINE_AA)
+    
+    # Direction indicator arrow inside car (showing forward)
+    arrow_start_y = car_y1 + 100
+    arrow_end_y = car_y1 + 40
+    cv2.arrowedLine(hud, (cx, arrow_start_y), (cx, arrow_end_y), 
+                    (255, 200, 0), 3, tipLength=0.3)
 
-    # Blind spot bars
+    # Blind spot zones (wider for top view)
     def col_for(state):
         return (0, 0, 255) if state == "warn" else ((0, 215, 255) if state == "near" else (80, 80, 80))
     left_col = col_for(left_state)
     right_col = col_for(right_state)
-    cv2.rectangle(hud, (car_x1 - 50, car_y1 + 10), (car_x1 - 15, car_y2 - 10), left_col, -1)
-    cv2.rectangle(hud, (car_x2 + 15, car_y1 + 10), (car_x2 + 50, car_y2 - 10), right_col, -1)
+    # Left blind spot zone
+    cv2.rectangle(hud, (car_x1 - 80, car_y1 + 50), (car_x1 - 15, car_y2 - 50), left_col, -1)
+    cv2.putText(hud, "LEFT", (car_x1 - 70, cx - 20), cv2.FONT_HERSHEY_SIMPLEX, 
+                0.5, (255, 255, 255), 1, cv2.LINE_AA)
+    # Right blind spot zone
+    cv2.rectangle(hud, (car_x2 + 15, car_y1 + 50), (car_x2 + 80, car_y2 - 50), right_col, -1)
+    cv2.putText(hud, "RIGHT", (car_x2 + 20, cx - 20), cv2.FONT_HERSHEY_SIMPLEX, 
+                0.5, (255, 255, 255), 1, cv2.LINE_AA)
 
     # Front / Rear arrows
     cv2.arrowedLine(hud, (cx, car_y1 - 10), (cx, car_y1 - 40), (220, 220, 220), 2, tipLength=0.4)
@@ -146,7 +265,8 @@ def draw_dashboard(left_state, right_state, lane_state, prox_alert,
         cv2.rectangle(hud, (tx - 2, ty - 22), (tx + tile_w + 2, ty - 2), (35, 35, 35), -1)
         cv2.putText(hud, title, (tx + 8, ty - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (220,220,220), 1, cv2.LINE_AA)
         if frame is not None:
-            fr = cv2.resize(frame, (tile_w, tile_h))
+            # Use INTER_NEAREST for fastest resizing (sacrifices quality for speed)
+            fr = cv2.resize(frame, (tile_w, tile_h), interpolation=cv2.INTER_NEAREST)
         else:
             fr = np.zeros((tile_h, tile_w, 3), dtype=np.uint8)
             cv2.putText(fr, "No Feed", (88, 128), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200,200,200), 2, cv2.LINE_AA)
@@ -231,13 +351,21 @@ def process_image(image, state, side="left"):
 
 # --- NEW: lightweight detection on numpy frame (used in main loop) ---
 def detect_blindspot_frame(array, state, side="left"):
-    """Run YOLOv5 on an already-decoded numpy image; update state & CSV."""
+    """Run YOLOv5 on an already-decoded numpy image; update state & CSV with timestamp."""
     if array is None:
         return
-    rgb = cv2.cvtColor(array, cv2.COLOR_BGR2RGB)
-    results = model(rgb)
+    
+    # Resize image for faster inference (320x240 -> 160x120)
+    h, w = array.shape[:2]
+    scale = 0.5  # 50% smaller for faster processing
+    small_array = cv2.resize(array, (int(w * scale), int(h * scale)))
+    
+    rgb = cv2.cvtColor(small_array, cv2.COLOR_BGR2RGB)
+    results = model(rgb, size=160)  # Use smaller inference size
 
     alert_level = "clear"
+    current_time = time.time()
+    
     if len(results.xyxy) > 0 and results.xyxy[0] is not None:
         detections = results.xyxy[0].cpu().numpy()
         names = model.names
@@ -246,37 +374,49 @@ def detect_blindspot_frame(array, state, side="left"):
             label = names[int(cls_id)].lower()
 
             if any(k in label for k in VEHICLE_KEYWORDS):
-                h, w, _ = array.shape
+                sh, sw = small_array.shape[:2]
                 box_center_x = (x1 + x2) / 2
                 box_height = y2 - y1
 
                 if side == "left":
-                    if 0.05 * w < box_center_x < 0.35 * w:
+                    if 0.05 * sw < box_center_x < 0.35 * sw:
                         alert_level = "near"
-                        if box_height > 0.25 * h: alert_level = "warn"
+                        if box_height > 0.25 * sh: alert_level = "warn"
                 else:
-                    if 0.65 * w < box_center_x < 0.95 * w:
+                    if 0.65 * sw < box_center_x < 0.95 * sw:
                         alert_level = "near"
-                        if box_height > 0.25 * h: alert_level = "warn"
+                        if box_height > 0.25 * sh: alert_level = "warn"
 
                 writer.writerow([datetime.datetime.now(), label, float(conf),
                                  side, alert_level, "", "", ""])
 
-    state["level"] = alert_level
-    if alert_level == "warn" and beep_sound:
-        beep_sound.play()
+    # Update state with timestamp if danger detected
+    previous_level = state.get("level", "clear")
+    
+    if alert_level != "clear":
+        state["level"] = alert_level
+        state["last_detection"] = current_time
+        # Only play sound if transitioning from clear to warn (not on every frame)
+        if alert_level == "warn" and previous_level == "clear" and audio_alerts["blindspot"]:
+            audio_alerts["blindspot"].play()
+    else:
+        # Keep previous warning state if within clear time, otherwise clear
+        if current_time - state.get("last_detection", 0) > WARNING_CLEAR_TIME:
+            state["level"] = "clear"
 
 
 # =========================
 # Proximity
 # =========================
-def check_proximity(world, vehicle):
+def check_proximity(world, vehicle, prox_state):
+    """Check proximity to other vehicles with time-based warning clearing."""
     ego_loc = vehicle.get_location()
     ego_vel = vehicle.get_velocity().length()
 
     min_dist = 9999
     rel_speed = 0
     alert = "clear"
+    current_time = time.time()
 
     for actor in world.get_actors().filter("vehicle.*"):
         if actor.id == vehicle.id: continue
@@ -294,7 +434,21 @@ def check_proximity(world, vehicle):
         writer.writerow([datetime.datetime.now(), "vehicle_ahead", "", "", "",
                          "", f"{min_dist:.1f}", f"{rel_speed:.1f}"])
 
-    return alert
+    # Update proximity state with timestamp
+    previous_level = prox_state.get("level", "clear")
+    
+    if alert != "clear":
+        prox_state["level"] = alert
+        prox_state["last_detection"] = current_time
+        # Only play sound if transitioning from clear to warn (not on every frame)
+        if alert == "warn" and previous_level == "clear" and audio_alerts["proximity"]:
+            audio_alerts["proximity"].play()
+    else:
+        # Keep previous warning state if within clear time, otherwise clear
+        if current_time - prox_state.get("last_detection", 0) > WARNING_CLEAR_TIME:
+            prox_state["level"] = "clear"
+    
+    return prox_state["level"]
 
 
 # =========================
@@ -334,20 +488,36 @@ def spawn_npc_traffic(world, client, num_vehicles=20):
 # =========================
 # Manual drive
 # =========================
-def manual_control(vehicle, world, left_state, right_state, lane_state,
+def manual_control(vehicle, world, left_state, right_state, lane_state, prox_state,
                    shared_left, shared_right, shared_front, shared_rear):
+    """
+    Main control loop with performance optimizations:
+    - Skip-frame detection: Only run YOLOv5 every N frames
+    - Downscaled inference: Process smaller images (50% scale)
+    - Fast interpolation: Use INTER_NEAREST for camera tiles
+    - Reduced FPS target: 30 FPS for smoother experience
+    """
     # Hidden pygame window (we only use it for quit events; keys are read globally)
     screen = pygame.display.set_mode((1, 1), pygame.HIDDEN)
     pygame.display.set_caption("Vehicle Control")
     clock = pygame.time.Clock()
 
-    # Windows virtual key codes
-    VK_W, VK_A, VK_S, VK_D = 0x57, 0x41, 0x53, 0x44
-    VK_ESC, VK_SPACE = 0x1B, 0x20
-    GetAsyncKeyState = ctypes.windll.user32.GetAsyncKeyState
+    # Check if Windows for global key state reading
+    is_windows = platform.system() == 'Windows'
+    
+    if is_windows:
+        # Windows virtual key codes
+        VK_W, VK_A, VK_S, VK_D = 0x57, 0x41, 0x53, 0x44
+        VK_ESC, VK_SPACE = 0x1B, 0x20
+        GetAsyncKeyState = ctypes.windll.user32.GetAsyncKeyState
+    else:
+        print("Warning: Non-Windows system detected. Keyboard controls may not work properly.")
+        print("Consider using pygame.key.get_pressed() for cross-platform support.")
 
     reverse_mode = False
     prev_space_down = False
+    frame_counter = 0
+    detection_interval = DETECTION_SKIP_FRAMES  # Use global setting
 
     while True:
         control = carla.VehicleControl()
@@ -356,12 +526,23 @@ def manual_control(vehicle, world, left_state, right_state, lane_state,
             if event.type == pygame.QUIT:
                 return
 
-        w_down = (GetAsyncKeyState(VK_W) & 0x8000) != 0
-        a_down = (GetAsyncKeyState(VK_A) & 0x8000) != 0
-        s_down = (GetAsyncKeyState(VK_S) & 0x8000) != 0
-        d_down = (GetAsyncKeyState(VK_D) & 0x8000) != 0
-        esc_down = (GetAsyncKeyState(VK_ESC) & 0x8000) != 0
-        space_down = (GetAsyncKeyState(VK_SPACE) & 0x8000) != 0
+        if is_windows:
+            # Windows: Use global key state
+            w_down = (GetAsyncKeyState(VK_W) & 0x8000) != 0
+            a_down = (GetAsyncKeyState(VK_A) & 0x8000) != 0
+            s_down = (GetAsyncKeyState(VK_S) & 0x8000) != 0
+            d_down = (GetAsyncKeyState(VK_D) & 0x8000) != 0
+            esc_down = (GetAsyncKeyState(VK_ESC) & 0x8000) != 0
+            space_down = (GetAsyncKeyState(VK_SPACE) & 0x8000) != 0
+        else:
+            # Non-Windows: Fallback to pygame (requires window focus)
+            keys = pygame.key.get_pressed()
+            w_down = keys[pygame.K_w]
+            a_down = keys[pygame.K_a]
+            s_down = keys[pygame.K_s]
+            d_down = keys[pygame.K_d]
+            esc_down = keys[pygame.K_ESCAPE]
+            space_down = keys[pygame.K_SPACE]
 
         if esc_down:
             return
@@ -381,22 +562,34 @@ def manual_control(vehicle, world, left_state, right_state, lane_state,
 
         control.reverse = reverse_mode
 
-        vehicle.apply_control(control)
-        world.tick()
+        try:
+            vehicle.apply_control(control)
+            world.tick()
+        except RuntimeError as e:
+            print(f"Runtime error during simulation tick: {e}")
+            return
 
         follow_vehicle_spectator(world, vehicle)
-        prox_alert = check_proximity(world, vehicle)
+        prox_alert = check_proximity(world, vehicle, prox_state)
 
         frame_left  = shared_left["frame"]
         frame_right = shared_right["frame"]
         frame_front = shared_front["frame"]
         frame_rear  = shared_rear["frame"]
 
-        # Run blind-spot detection here (lightweight callbacks -> smooth mirrors)
-        if frame_left is not None:
-            detect_blindspot_frame(frame_left, left_state, "left")
-        if frame_right is not None:
-            detect_blindspot_frame(frame_right, right_state, "right")
+        # Run blind-spot detection only every N frames for better performance
+        frame_counter += 1
+        if frame_counter >= detection_interval:
+            frame_counter = 0
+            if frame_left is not None:
+                detect_blindspot_frame(frame_left, left_state, "left")
+            if frame_right is not None:
+                detect_blindspot_frame(frame_right, right_state, "right")
+        
+        # Clear lane warning after 0.5s if no longer detecting
+        if lane_state["active"]:
+            if time.time() - lane_state.get("last_detection", 0) > WARNING_CLEAR_TIME:
+                lane_state["active"] = False
 
         vel = vehicle.get_velocity()
         speed_mps = math.sqrt(vel.x**2 + vel.y**2 + vel.z**2)
@@ -411,26 +604,63 @@ def manual_control(vehicle, world, left_state, right_state, lane_state,
             hud_steer=control.steer,
             hud_reverse=reverse_mode)
 
-        cv2.waitKey(1)
-        clock.tick(60)
+        # Check if window was closed or ESC was pressed
+        key = cv2.waitKey(1) & 0xFF
+        if key == 27:  # ESC key
+            print("ESC pressed, exiting...")
+            return
+        
+        # Check if window was closed (X button clicked)
+        if cv2.getWindowProperty("ADAS HUD", cv2.WND_PROP_VISIBLE) < 1:
+            print("Window closed, exiting...")
+            return
+        
+        clock.tick(TARGET_FPS)  # Use global FPS setting
 
 
 # =========================
 # Main
 # =========================
 def main():
+    print("=" * 60)
+    print("EV Infotainment System - ADAS Dashboard")
+    print("=" * 60)
+    print()
+    
     actor_list = []
     camera_left = camera_right = lane_sensor = None
     camera_front = camera_rear = None
-    lane_state = {"active": False}
+    lane_state = {"active": False, "last_detection": 0}
     shared_left, shared_right = {"frame": None}, {"frame": None}
     shared_front, shared_rear = {"frame": None}, {"frame": None}
-    left_state, right_state = {"level": "clear"}, {"level": "clear"}
+    left_state, right_state = {"level": "clear", "last_detection": 0}, {"level": "clear", "last_detection": 0}
+    prox_state = {"level": "clear", "last_detection": 0}
 
     try:
+        print("Connecting to CARLA simulator...")
         client = carla.Client('localhost', 2000)
         client.set_timeout(10.0)
-        world = client.get_world()
+        
+        # Try to connect with retries
+        max_retries = 3
+        retry_delay = 5
+        for attempt in range(max_retries):
+            try:
+                world = client.get_world()
+                print(f"✓ Connected to CARLA simulator (Map: {world.get_map().name})")
+                break
+            except RuntimeError as e:
+                if attempt < max_retries - 1:
+                    print(f"⚠ Connection attempt {attempt + 1} failed. Retrying in {retry_delay} seconds...")
+                    print(f"   Make sure CarlaUE4.exe is running!")
+                    time.sleep(retry_delay)
+                else:
+                    print("✗ Failed to connect to CARLA simulator.")
+                    print("\nPlease ensure:")
+                    print("  1. CARLA is running: cd CARLA_0.9.15\\WindowsNoEditor && .\\CarlaUE4.exe")
+                    print("  2. CARLA has fully loaded (you should see the simulator window)")
+                    print("  3. CARLA is listening on port 2000 (default)")
+                    raise
 
         # Synchronous mode
         settings = world.get_settings()
@@ -439,17 +669,37 @@ def main():
         world.apply_settings(settings)
 
         bp_lib = world.get_blueprint_library()
-        vehicle_bp = random.choice(bp_lib.filter('vehicle.*'))
+        
+        # Use a fixed vehicle type for consistent testing (Tesla Model 3)
+        # Options: 'vehicle.tesla.model3', 'vehicle.audi.a2', 'vehicle.bmw.grandtourer', etc.
+        try:
+            vehicle_bp = bp_lib.find('vehicle.tesla.model3')
+            print("✓ Using Tesla Model 3 as ego vehicle")
+        except:
+            # Fallback to another common sedan if Tesla not available
+            vehicle_bp = bp_lib.find('vehicle.audi.a2')
+            print("✓ Using Audi A2 as ego vehicle (Tesla not available)")
+        
         transform = random.choice(world.get_map().get_spawn_points())
         vehicle = world.spawn_actor(vehicle_bp, transform)
         vehicle.set_autopilot(False)
         actor_list.append(vehicle)
+        print(f"✓ Spawned ego vehicle: {vehicle.type_id}")
 
         # Lane invasion sensor
         lane_bp = bp_lib.find('sensor.other.lane_invasion')
         lane_sensor = world.spawn_actor(lane_bp, carla.Transform(), attach_to=vehicle)
         actor_list.append(lane_sensor)
-        lane_sensor.listen(lambda e: lane_state.update({"active": True}))
+        
+        def on_lane_invasion(event):
+            """Callback for lane invasion with audio alert"""
+            # Only play sound if warning was previously clear
+            was_clear = not lane_state.get("active", False)
+            lane_state.update({"active": True, "last_detection": time.time()})
+            if was_clear and audio_alerts["lane"]:
+                audio_alerts["lane"].play()
+        
+        lane_sensor.listen(on_lane_invasion)
 
         # Cameras
         cam_bp = bp_lib.find('sensor.camera.rgb')
@@ -492,22 +742,34 @@ def main():
         npcs = spawn_npc_traffic(world, client, 20)
         actor_list.extend(npcs)
 
-        manual_control(vehicle, world, left_state, right_state, lane_state,
+        manual_control(vehicle, world, left_state, right_state, lane_state, prox_state,
                        shared_left, shared_right, shared_front, shared_rear)
 
     finally:
         print("Cleaning up...")
         for actor in actor_list:
-            try: actor.destroy()
-            except: pass
-        if camera_left: camera_left.stop()
-        if camera_right: camera_right.stop()
-        if camera_front: camera_front.stop()
-        if camera_rear: camera_rear.stop()
-        if lane_sensor: lane_sensor.stop()
-        log_file.close()
+            try: 
+                actor.destroy()
+            except Exception as e:
+                print(f"Warning: Failed to destroy actor: {e}")
+        
+        # Stop sensors safely
+        for sensor in [camera_left, camera_right, camera_front, camera_rear, lane_sensor]:
+            if sensor:
+                try:
+                    sensor.stop()
+                except Exception as e:
+                    print(f"Warning: Failed to stop sensor: {e}")
+        
+        # Close log file safely
+        try:
+            log_file.close()
+        except Exception as e:
+            print(f"Warning: Failed to close log file: {e}")
+        
         cv2.destroyAllWindows()
         pygame.quit()
+        print("Cleanup complete.")
 
 
 if __name__ == '__main__':
